@@ -202,15 +202,6 @@ textarea.finput{resize:none;min-height:55px;line-height:1.5}
 </div>
 
 <script>
-function toggleCustomRecurrence() {
-  const r = document.getElementById("fre").value;
-  const box = document.getElementById("customRecurrence");
-
-  if (box) {
-    box.style.display = (r === "custom") ? "block" : "none";
-  }
-}
-
 const DIFFS = {facile:1, normal:1.5, difficile:2, 'extrême':3};
 const PRIOS = {basse:1, normale:1.2, haute:1.5, critique:2};
 const RANKS = ['Novice','Apprenti','Explorateur','Guerrier','Champion','Héros','Légende','Maître'];
@@ -275,12 +266,6 @@ function rl(r){if(!r||r==='aucune')return '';if(r==='quotidien')return 'quotidie
 
 // ── RÉCURRENCE & REPORT ────────────────────────────────
 function wasOn(t,day){
- if (t.recurrence && t.recurrence.endsWith('w')) {
-  const n = parseInt(t.recurrence);
-  const d = Math.floor((new Date(day) - new Date(t.scheduledDate)) / 86400000);
-  return d >= 0 && d % (n * 7) === 0;
-}
-``
   if(!t.scheduledDate||t.scheduledDate>day)return false;
   if(t.recurrence==='quotidien')return true;
   if(t.recurrence==='hebdo'){const d=Math.round((new Date(day+'T12:00:00')-new Date(t.scheduledDate+'T12:00:00'))/86400000);return d>=0&&d%7===0}
@@ -762,27 +747,16 @@ function fHTML(t){
     +'<div class="fld"><label class="flbl">priorité</label><select class="finput" id="fpr" onchange="uprev()">'+Object.keys(PRIOS).map(x=>'<option value="'+x+'"'+((d.priority||'normale')===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div></div>'
     +'<label class="flbl">récurrence</label>'
     +'<select class="finput" id="fre" onchange="togdate()">'
-    +<select class="finput" id="fre" onchange="togdate(); toggleCustomRecurrence()">
-  <option value="aucune">aucune (date unique)</option>
-  <option value="quotidien">tous les jours</option>
-  <option value="hebdo">toutes les semaines</option>
-  <option value="mensuel">tous les mois</option>
-  <option value="custom">personnalisée</option>
-</select>
-<div id="customRecurrence" style="display:none; margin-bottom:11px;">
-  <label class="flbl">répéter</label>
-
-  <div class="frow">
-    <input class="finput" id="frecN" type="number" min="1" value="2">
-    
-    <select class="finput" id="frecUnit">
-      <option value="j">jours</option>
-      <option value="w">semaines</option>
-      <option value="m">mois</option>
-    </select>
-  </div>
-</div>
-    
+    +'<option value="aucune"'+((d.recurrence||'aucune')==='aucune'?' selected':'')+'>aucune (date unique)</option>'
+    +'<option value="quotidien"'+(d.recurrence==='quotidien'?' selected':'')+'>tous les jours</option>'
+    +'<option value="2j"'+(d.recurrence==='2j'?' selected':'')+'>tous les 2 jours</option>'
+    +'<option value="3j"'+(d.recurrence==='3j'?' selected':'')+'>tous les 3 jours</option>'
+    +'<option value="4j"'+(d.recurrence==='4j'?' selected':'')+'>tous les 4 jours</option>'
+    +'<option value="5j"'+(d.recurrence==='5j'?' selected':'')+'>tous les 5 jours</option>'
+    +'<option value="6j"'+(d.recurrence==='6j'?' selected':'')+'>tous les 6 jours</option>'
+    +'<option value="hebdo"'+(d.recurrence==='hebdo'?' selected':'')+'>toutes les semaines</option>'
+    +'<option value="mensuel"'+(d.recurrence==='mensuel'?' selected':'')+'>tous les mois</option>'
+    +'</select>'
     +'<div id="fdw"><label class="flbl" id="fdlbl">date</label><input class="finput" id="fda" type="date" value="'+(d.scheduledDate||curDay)+'"></div>'
     +'<label class="flbl">note (optionnelle)</label>'
     +'<textarea class="finput" id="fnote" placeholder="ex: parcours du parc...">'+(d.note||'')+'</textarea>'
@@ -848,14 +822,7 @@ function saveTask(editId){
   const dur=parseInt(document.getElementById('fd')&&document.getElementById('fd').value)||0;
   const diff=(document.getElementById('fdi')&&document.getElementById('fdi').value)||'normal';
   const prio=(document.getElementById('fpr')&&document.getElementById('fpr').value)||'normale';
-  let recur = document.getElementById('fre').value;
-
-if (recur === 'custom') {
-  const n = parseInt(document.getElementById('frecN').value) || 1;
-  const unit = document.getElementById('frecUnit').value;
-
-  recur = n + unit;
-}
+  const recur=(document.getElementById('fre')&&document.getElementById('fre').value)||'aucune';
   const date=(document.getElementById('fda')&&document.getElementById('fda').value)||curDay;
   const group=((document.getElementById('fg')&&document.getElementById('fg').value)||'').trim()||'Général';
   const isCtr=(document.getElementById('fctr')&&document.getElementById('fctr').checked)||false;
