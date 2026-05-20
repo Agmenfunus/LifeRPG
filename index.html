@@ -262,16 +262,71 @@ function getRank(l){return RANKS[Math.min(l-1,RANKS.length-1)]}
 function isDone(day,id){return!!comps[day+'_'+id]}
 function getCnt(day,id){return counters[day+'_'+id]||0}
 function isSubDone(day,tid,sid){return!!subcomps[day+'_'+tid+'_'+sid]}
-function rl(r){if(!r||r==='aucune')return '';if(r==='quotidien')return 'quotidien';if(r==='hebdo')return 'hebdo';if(r==='mensuel')return 'mensuel';if(r.endsWith('j'))return 'tous les '+r;return r}
+// Decode recurrence string: '1j','3j','2s','3s','1m','2m', 'aucune', 'quotidien'
+// Format stored: {unit:'j'|'s'|'m', every:N} or legacy strings
+function parseRecur(r){
+  if(!r||r==='aucune')return null;
+  if(r==='quotidien')return {unit:'j',every:1};
+  if(r==='hebdo')return {unit:'s',every:1};
+  if(r==='mensuel')return {unit:'m',every:1};
+  // New format: '3j','2s','1m'
+  const m=r.match(/^(\d+)([jsm])$/);
+  if(m)return {unit:m[2],every:parseInt(m[1])};
+  return null;
+}
+
+function rl(r){
+  const p=parseRecur(r);if(!p)return '';
+  if(p.unit==='j')return p.every===1?'quotidien':'tous les '+p.every+'j';
+  if(p.unit==='s')return p.every===1?'hebdo':'toutes les '+p.every+' sem.';
+  if(p.unit==='m')return p.every===1?'mensuel':'tous les '+p.every+' mois';
+  return '';
+}
+
+function isWeekend(day){const d=new Date(day+'T12:00:00').getDay();return d===0||d===6}
+
+// Next Monday from a given day (inclusive if already monday)
+function nextMonday(day){
+  const d=new Date(day+'T12:00:00');
+  const dow=d.getDay();
+  const toAdd=dow===1?0:dow===0?1:8-dow;
+  d.setDate(d.getDate()+toAdd);
+  return d.toISOString().slice(0,10);
+}
 
 // ── RÉCURRENCE & REPORT ────────────────────────────────
 function wasOn(t,day){
   if(!t.scheduledDate||t.scheduledDate>day)return false;
-  if(t.recurrence==='quotidien')return true;
-  if(t.recurrence==='hebdo'){const d=Math.round((new Date(day+'T12:00:00')-new Date(t.scheduledDate+'T12:00:00'))/86400000);return d>=0&&d%7===0}
-  if(t.recurrence==='mensuel'){const b=new Date(t.scheduledDate+'T12:00:00'),c=new Date(day+'T12:00:00');return b.getDate()===c.getDate()&&c>=b}
-  if(t.recurrence&&t.recurrence.endsWith('j')&&t.recurrence!=='aucune'){const x=parseInt(t.recurrence);if(x>=2&&x<=6){const d=Math.round((new Date(day+'T12:00:00')-new Date(t.scheduledDate+'T12:00:00'))/86400000);return d>=0&&d%x===0}}
-  return t.recurrence==='aucune'&&t.scheduledDate===day;
+  const p=parseRecur(t.recurrence);
+  if(!p)return t.scheduledDate===day; // aucune
+
+  // Weekend exclusion
+  if(t.noWeekend&&isWeekend(day)){
+    if(t.weekendMode==='report'){
+      // La tâche aurait dû être lundi → on vérifie si lundi correspond
+      const mon=nextMonday(day);
+      return mon===day?checkRecurOn(t,p,day):false;
+    }
+    return false; // annulée
+  }
+
+  return checkRecurOn(t,p,day);
+}
+
+function checkRecurOn(t,p,day){
+  const base=new Date(t.scheduledDate+'T12:00:00');
+  const cur=new Date(day+'T12:00:00');
+  const diffDays=Math.round((cur-base)/86400000);
+  if(diffDays<0)return false;
+  if(p.unit==='j')return diffDays%p.every===0;
+  if(p.unit==='s')return diffDays%(p.every*7)===0;
+  if(p.unit==='m'){
+    // Même jour du mois, tous les p.every mois
+    if(cur.getDate()!==base.getDate())return false;
+    const months=(cur.getFullYear()-base.getFullYear())*12+(cur.getMonth()-base.getMonth());
+    return months>=0&&months%p.every===0;
+  }
+  return false;
 }
 function donOn(t,day){return t.type==='counter'?getCnt(day,t.id)>=(t.counterGoal||1):isDone(day,t.id)}
 function hasPast(t,day){
@@ -283,6 +338,23 @@ function hasPast(t,day){
 function tasksForDay(day){
   return tasks.filter(t=>{
     if(t.archived||!t.scheduledDate||t.scheduledDate>day)return false;
+
+    // Weekend report mode: la tâche apparaît le lundi suivant si elle tombait un weekend
+    if(t.noWeekend&&t.weekendMode==='report'&&!isWeekend(day)){
+      // Chercher si un jour weekend précédent (sam ou dim) correspondait à une occurrence
+      // et que ce lundi est le nextMonday de ce weekend
+      let d=new Date(day+'T12:00:00');
+      // Vérifier sam et dim précédents
+      for(let back=1;back<=2;back++){
+        const prev=new Date(d);prev.setDate(d.getDate()-back);
+        const ps=prev.toISOString().slice(0,10);
+        if(isWeekend(ps)){
+          const p=parseRecur(t.recurrence);
+          if(p&&checkRecurOn(t,p,ps)&&nextMonday(ps)===day&&!donOn(t,ps))return true;
+        }
+      }
+    }
+
     if(wasOn(t,day))return true;
     if(t.autoReport&&t.recurrence!=='aucune')return hasPast(t,day);
     if(t.recurrence==='aucune'&&t.scheduledDate<day&&t.autoReport){
@@ -441,6 +513,7 @@ function renderStd(t,day,today,gcl){
     +'<span class="tag tdiff">'+t.difficulty+'</span>'
     +(t.priority!=='normale'?'<span class="tag tprio">'+t.priority+'</span>':'')
     +(rl(t.recurrence)?'<span class="tag trecur">↻'+rl(t.recurrence)+'</span>':'')
+    +(t.noWeekend?'<span class="tag trecur">⛔ sem. only</span>':'')
     +(ov?'<span class="tag tover">⚠+'+(daysSince||'?')+'j</span>':'')
     +'</div></div>'
     +(ts>=2?'<span class="task-streak">🔥'+ts+'</span>':'')
@@ -746,17 +819,28 @@ function fHTML(t){
     +'<div class="frow"><div class="fld"><label class="flbl">difficulté</label><select class="finput" id="fdi" onchange="uprev()">'+Object.keys(DIFFS).map(x=>'<option value="'+x+'"'+(( d.difficulty||'normal')===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div>'
     +'<div class="fld"><label class="flbl">priorité</label><select class="finput" id="fpr" onchange="uprev()">'+Object.keys(PRIOS).map(x=>'<option value="'+x+'"'+((d.priority||'normale')===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div></div>'
     +'<label class="flbl">récurrence</label>'
-    +'<select class="finput" id="fre" onchange="togdate()">'
-    +'<option value="aucune"'+((d.recurrence||'aucune')==='aucune'?' selected':'')+'>aucune (date unique)</option>'
-    +'<option value="quotidien"'+(d.recurrence==='quotidien'?' selected':'')+'>tous les jours</option>'
-    +'<option value="2j"'+(d.recurrence==='2j'?' selected':'')+'>tous les 2 jours</option>'
-    +'<option value="3j"'+(d.recurrence==='3j'?' selected':'')+'>tous les 3 jours</option>'
-    +'<option value="4j"'+(d.recurrence==='4j'?' selected':'')+'>tous les 4 jours</option>'
-    +'<option value="5j"'+(d.recurrence==='5j'?' selected':'')+'>tous les 5 jours</option>'
-    +'<option value="6j"'+(d.recurrence==='6j'?' selected':'')+'>tous les 6 jours</option>'
-    +'<option value="hebdo"'+(d.recurrence==='hebdo'?' selected':'')+'>toutes les semaines</option>'
-    +'<option value="mensuel"'+(d.recurrence==='mensuel'?' selected':'')+'>tous les mois</option>'
+    +'<div style="display:flex;gap:6px;margin-bottom:11px;align-items:center">'
+    +'<select class="finput" id="freunit" style="flex:1;margin:0" onchange="togdate()">'
+    +'<option value="aucune"'+((!d.recurrence||d.recurrence==='aucune')?' selected':'')+'>aucune (date unique)</option>'
+    +'<option value="j"'+((parseRecur(d.recurrence)||{}).unit==='j'?' selected':'')+'>tous les X jours</option>'
+    +'<option value="s"'+((parseRecur(d.recurrence)||{}).unit==='s'?' selected':'')+'>toutes les X semaines</option>'
+    +'<option value="m"'+((parseRecur(d.recurrence)||{}).unit==='m'?' selected':'')+'>tous les X mois</option>'
     +'</select>'
+    +'<input class="finput" id="frenum" type="number" min="1" max="99" value="'+((parseRecur(d.recurrence)||{}).every||1)+'" style="width:64px;margin:0" placeholder="X">'
+    +'</div>'
+    // Weekend option (visible uniquement si récurrence active)
+    +'<div id="wkendOpt" style="display:'+(d.recurrence&&d.recurrence!=='aucune'?'block':'none')+'">'
+    +'<div class="toggle-row" onclick="togWeekend()">'
+    +'<div><div class="toggle-lbl">Exclure le weekend</div><div class="toggle-sub">ne pas afficher sam. et dim.</div></div>'
+    +'<label class="toggle" onclick="event.stopPropagation()"><input type="checkbox" id="fnowknd" '+(d.noWeekend?'checked':'')+' onchange="togWeekend()"><span class="toggle-slider"></span></label>'
+    +'</div>'
+    +'<div id="wkendMode" style="display:'+(d.noWeekend?'block':'none')+';margin-bottom:11px">'
+    +'<label class="flbl">si tombe un weekend</label>'
+    +'<select class="finput" id="fwkmode">'
+    +'<option value="report"'+(d.weekendMode==='report'||!d.weekendMode?' selected':'')+'>reporter au lundi suivant</option>'
+    +'<option value="cancel"'+(d.weekendMode==='cancel'?' selected':'')+'>annuler ce jour-là</option>'
+    +'</select>'
+    +'</div></div>'
     +'<div id="fdw"><label class="flbl" id="fdlbl">date</label><input class="finput" id="fda" type="date" value="'+(d.scheduledDate||curDay)+'"></div>'
     +'<label class="flbl">note (optionnelle)</label>'
     +'<textarea class="finput" id="fnote" placeholder="ex: parcours du parc...">'+(d.note||'')+'</textarea>'
@@ -811,7 +895,24 @@ function uprev(){
 }
 function togCtr(){const c=document.getElementById('fctr')&&document.getElementById('fctr').checked;const co=document.getElementById('ctrOpt'),ro=document.getElementById('repOpt');if(co)co.style.display=c?'block':'none';if(ro)ro.style.display=c?'none':'block';uprev()}
 function togRep(){const c=document.getElementById('frep')&&document.getElementById('frep').checked;const m=document.getElementById('malOpt');if(m)m.style.display=c?'block':'none'}
-function togdate(){const r=document.getElementById('fre')&&document.getElementById('fre').value,w=document.getElementById('fdw');if(w)w.style.display=r==='quotidien'?'none':'block';const l=document.getElementById('fdlbl');if(l)l.textContent=r==='aucune'?'date':'date de début';uprev()}
+function togdate(){
+  const unit=document.getElementById('freunit')&&document.getElementById('freunit').value;
+  const w=document.getElementById('fdw');if(w)w.style.display=unit==='aucune'?'block':'block'; // toujours visible pour date de début
+  const l=document.getElementById('fdlbl');if(l)l.textContent=unit==='aucune'?'date':'date de début (1ère occurrence)';
+  // Montrer/cacher option weekend
+  const wk=document.getElementById('wkendOpt');if(wk)wk.style.display=unit!=='aucune'?'block':'none';
+  uprev();
+}
+function togWeekend(){
+  const c=document.getElementById('fnowknd')&&document.getElementById('fnowknd').checked;
+  const m=document.getElementById('wkendMode');if(m)m.style.display=c?'block':'none';
+}
+function getRecurStr(){
+  const unit=document.getElementById('freunit')&&document.getElementById('freunit').value;
+  if(!unit||unit==='aucune')return 'aucune';
+  const num=parseInt(document.getElementById('frenum')&&document.getElementById('frenum').value)||1;
+  return num+unit; // ex: '1j','3s','2m'
+}
 
 function openAdd(){document.getElementById('mtitle').textContent='add-quest';document.getElementById('mbody').innerHTML=fHTML(null)+'<div class="btnrow"><button class="btn btncancel" onclick="closeModal()">annuler</button><button class="btn btnok" onclick="saveTask(null)">créer ↗</button></div>';document.getElementById('moverlay').classList.add('open');togdate();uprev();setTimeout(()=>{const el=document.getElementById('fn');if(el)el.focus()},150)}
 function openEdit(id){const t=tasks.find(t=>t.id===id);if(!t)return;document.getElementById('mtitle').textContent='edit-quest';document.getElementById('mbody').innerHTML=fHTML(t)+'<div class="btnrow"><button class="btn btncancel" onclick="closeModal()">annuler</button><button class="btn btnok" onclick="saveTask('+id+')">modifier ↗</button></div>';document.getElementById('moverlay').classList.add('open');togdate();uprev()}
@@ -822,16 +923,18 @@ function saveTask(editId){
   const dur=parseInt(document.getElementById('fd')&&document.getElementById('fd').value)||0;
   const diff=(document.getElementById('fdi')&&document.getElementById('fdi').value)||'normal';
   const prio=(document.getElementById('fpr')&&document.getElementById('fpr').value)||'normale';
-  const recur=(document.getElementById('fre')&&document.getElementById('fre').value)||'aucune';
+  const recur=getRecurStr();
   const date=(document.getElementById('fda')&&document.getElementById('fda').value)||curDay;
   const group=((document.getElementById('fg')&&document.getElementById('fg').value)||'').trim()||'Général';
   const isCtr=(document.getElementById('fctr')&&document.getElementById('fctr').checked)||false;
   const counterGoal=isCtr?(parseInt(document.getElementById('fgoal')&&document.getElementById('fgoal').value)||0):0;
   const autoReport=!isCtr&&((document.getElementById('frep')&&document.getElementById('frep').checked)||false);
   const reportMalus=autoReport&&((document.getElementById('fmal')&&document.getElementById('fmal').checked)||false);
+  const noWeekend=!isCtr&&recur!=='aucune'&&((document.getElementById('fnowknd')&&document.getElementById('fnowknd').checked)||false);
+  const weekendMode=noWeekend?((document.getElementById('fwkmode')&&document.getElementById('fwkmode').value)||'report'):'none';
   const note=((document.getElementById('fnote')&&document.getElementById('fnote').value)||'').trim();
   const subtasks=isCtr?[]:getSubsFromForm();
-  const data={name,group,duration:dur||null,difficulty:diff,priority:prio,recurrence:recur,scheduledDate:recur==='quotidien'?tod():date,type:isCtr?'counter':'standard',counterGoal,autoReport,reportMalus,note,subtasks};
+  const data={name,group,duration:dur||null,difficulty:diff,priority:prio,recurrence:recur,scheduledDate:date,type:isCtr?'counter':'standard',counterGoal,autoReport,reportMalus,noWeekend,weekendMode,note,subtasks};
   gc(group);
   if(editId)tasks=tasks.map(t=>t.id===editId?Object.assign({},t,data):t);
   else tasks.push(Object.assign({id:nid++},data));
